@@ -82,44 +82,6 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
                  .str.lower()
     )
     return df
-
-def infer_datetime_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Try common LAPD column names; else infer from any column that parses to datetime."""
-    df = df.copy()
-    candidates = ["date_occ","date_rptd","date","time_occ","time_rptd","date_reported","date_occured","dt_occ","timestamp"]
-    cand_present = [c for c in candidates if c in df.columns]
-    dt_col = None
-    # LAPD often has "date_occ" and "time_occ" as integers HHMM. Build dt_occ.
-    if "date_occ" in df.columns and "time_occ" in df.columns:
-        try:
-            d = pd.to_datetime(df["date_occ"], errors="coerce")
-            t = df["time_occ"].astype(str).str.zfill(4)
-            hh = pd.to_numeric(t.str.slice(0,2), errors="coerce")
-            mm = pd.to_numeric(t.str.slice(2,4), errors="coerce")
-            dt = d + pd.to_timedelta(hh.fillna(0), unit="h") + pd.to_timedelta(mm.fillna(0), unit="m")
-            df["dt_occ"] = dt
-            dt_col = "dt_occ"
-        except Exception:
-            pass
-    if dt_col is None:
-        # pick the first column that parses to many valid datetimes
-        best = None; best_ok = 0
-        for c in df.columns:
-            try:
-                s = pd.to_datetime(df[c], errors="coerce")
-                ok = s.notna().sum()
-                if ok > best_ok and ok > 0.2*len(df):
-                    best, best_ok = c, ok
-            except Exception:
-                continue
-        if best is not None:
-            df["dt_occ"] = pd.to_datetime(df[best], errors="coerce")
-            dt_col = "dt_occ"
-    # add date-only
-    if dt_col:
-        df["date"] = pd.to_datetime(df[dt_col]).dt.date
-    return df, dt_col
-
 def add_time_features(df: pd.DataFrame, dt_col: str = "dt_occ", use_us_holidays: bool = True) -> pd.DataFrame:
     d = df.copy()
     s = pd.to_datetime(d[dt_col], errors="coerce")
@@ -134,6 +96,91 @@ def add_time_features(df: pd.DataFrame, dt_col: str = "dt_occ", use_us_holidays:
     else:
         d["is_holiday"] = 0
     return d
+import pandas as pd
+import numpy as np
+
+def _parse_any_date(series: pd.Series) -> pd.Series:
+    """Try multiple ways to parse a series into datetime."""
+    if np.issubdtype(series.dtype, np.datetime64):
+        return pd.to_datetime(series, errors="coerce")
+    if series.dtype == object and series.dropna().map(lambda x: hasattr(x, "year")).all():
+        return pd.to_datetime(series, errors="coerce")
+    if pd.api.types.is_integer_dtype(series) or pd.api.types.is_float_dtype(series):
+        arr = pd.to_numeric(series, errors='coerce')
+        dt = pd.to_datetime(arr, unit='s', errors='coerce')
+        # if most dates are around 1970, try ms
+        if dt.notna().mean() < 0.5 or (dt.dropna().dt.year <= 1971).mean() > 0.8:
+            dt_ms = pd.to_datetime(arr, unit='ms', errors='coerce')
+            if dt_ms.notna().mean() > dt.notna().mean():
+                dt = dt_ms
+        return dt
+    return pd.to_datetime(series, errors='coerce', infer_datetime_format=True)
+
+def _combine_date_time(df: pd.DataFrame, date_col: str, time_col: str) -> pd.Series:
+    """Combine separate date and time columns into a single datetime."""
+    d = _parse_any_date(df[date_col])
+    t = df[time_col]
+    # TIME OCC is often numeric HHMM
+    if pd.api.types.is_numeric_dtype(t):
+        t = t.fillna(0).astype(int).astype(str).str.zfill(4)
+    else:
+        t = t.astype(str).str.replace(r'[^0-9]', '', regex=True).str.zfill(4)
+    hh = pd.to_numeric(t.str[:2], errors='coerce').fillna(0).clip(0, 23).astype(int)
+    mm = pd.to_numeric(t.str[2:4], errors='coerce').fillna(0).clip(0, 59).astype(int)
+    return pd.to_datetime(d + pd.to_timedelta(hh, unit='h') + pd.to_timedelta(mm, unit='m'), errors='coerce')
+
+def choose_best_date_column(df: pd.DataFrame) -> pd.Series:
+    """
+    Search multiple candidate columns, pick the one with the highest fraction of
+    valid dates in 2000–today, and combine DATE OCC + TIME OCC when available.
+    """
+    preferred = [
+        "DATE OCC", "Date OCC", "date_occ", "date_occurred",
+        "DATE RPTD", "Date Rptd", "date_rptd",
+        "DATE", "Date", "date", "date_only"
+    ]
+    parsed = {}
+    for col in preferred:
+        if col in df.columns:
+            parsed[col] = _parse_any_date(df[col])
+
+    # Add combined date/time column if present
+    for dcol in ["DATE OCC", "Date OCC", "date_occ"]:
+        for tcol in ["TIME OCC", "Time OCC", "time_occ"]:
+            if dcol in df.columns and tcol in df.columns:
+                parsed[f"{dcol}+{tcol}"] = _combine_date_time(df, dcol, tcol)
+
+    # Fallback: parse any other string-like column
+    if not parsed:
+        for col in df.columns:
+            s = df[col]
+            if s.notna().any():
+                p = _parse_any_date(s)
+                if p.notna().mean() > 0.5:
+                    parsed[col] = p
+
+    def score(series: pd.Series) -> float:
+        """Score by valid ratio × (share in [2000, today]) minus penalty for single-date dominance."""
+        if series is None:
+            return 0.0
+        valid_rate = series.notna().mean()
+        if valid_rate == 0:
+            return 0.0
+        s = series.dropna()
+        good = s.between(pd.Timestamp("2000-01-01"), pd.Timestamp.now()).mean()
+        top_share = s.dt.date.value_counts(normalize=True).max()
+        return valid_rate * (0.5 + 0.5 * good) - (0.5 if top_share > 0.8 else 0.0)
+
+    best_key, best_series, best_score = None, None, 0
+    for key, series in parsed.items():
+        sc = score(series)
+        if sc > best_score:
+            best_key, best_series, best_score = key, series, sc
+
+    if best_series is None:
+        raise ValueError("No suitable date column found")
+    print(f"Using date column: {best_key}")
+    return best_series
 
 def validate_and_clean_coords(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     issues = []
@@ -300,6 +347,22 @@ def run_eda(
 
     print("==== [EDA-1] Read CSV/ZIP ====")
     df = pd.read_csv(raw_csv_path, low_memory=False, compression='infer')
+    # --- Canonical LAPD dates (do this ONCE here, not in the runner) -------------
+    date_dt = choose_best_date_column(df)
+
+          # Filter to a sane date range
+    mask = date_dt.between(pd.Timestamp("2000-01-01"), pd.Timestamp.now())
+    df = df.loc[mask].copy()
+
+          # Create normalized date features for downstream modules
+    df["date_dt"]   = date_dt.loc[mask].values
+    df["date"]      = df["date_dt"].dt.normalize()
+    df["year"]      = df["date_dt"].dt.year
+    df["month"]     = df["date_dt"].dt.month
+    df["weekday"]   = df["date_dt"].dt.weekday
+    df["hour"]      = df["date_dt"].dt.hour
+    df["is_weekend"]= (df["weekday"] >= 5).astype(int)
+
     print("shape:", df.shape)
 
     print("==== [EDA-2] Normalize column names ====")
