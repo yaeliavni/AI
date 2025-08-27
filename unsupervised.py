@@ -15,6 +15,28 @@ Author: Your Name
 """
 # unsupervised_backend.py
 from __future__ import annotations
+from __future__ import annotations
+
+import os, sys, warnings
+from pathlib import Path
+from typing import Iterable, Optional, Dict, Any, List, Tuple
+
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.decomposition import TruncatedSVD, PCA
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.metrics import (
+    silhouette_score, davies_bouldin_score, calinski_harabasz_score
+)
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
 import os, sys, warnings, re
 from pathlib import Path
 from typing import Iterable, Optional, Dict, Any, List
@@ -48,441 +70,480 @@ Examples:
   # Basic analysis
   python runner.py --data data.csv --output ./results
 
-  # Limit samples and specify random seed
-  python runner.py --data large_dataset.parquet --output ./results --max-samples 50000 --seed 123
-
-  # Run with interpretation of top 5 results
-  python runner.py --data data.csv --output ./results --interpret --top-n 5
-
-  # Exclude specific columns
-  python runner.py --data data.csv --output ./results --exclude victim_age victim_sex
-
-Output files:
-  - all_combinations_results.csv: Complete results table
-  - high_performance_combinations.csv: Results with silhouette >= 0.6
-  - best_combination_visualization.png: Scatter plot of best 2D result
-  - cluster_interpretations/: Detailed analysis of top combinations (if --interpret)
-        """
-    )
+  # Limit samples and specify random se..."""
+)
     
-    parser.add_argument(
-        '--data', '-d',
-        required=True,
-        help='Path to input data file (CSV or Parquet)'
-    )
-    
-    parser.add_argument(
-        '--output', '-o',
-        default='./unsupervised_results',
-        help='Output directory for results (default: ./unsupervised_results)'
-    )
-    
-    parser.add_argument(
-        '--max-samples',
-        type=int,
-        help='Maximum number of samples to use (default: use all data)'
-    )
-    
-    parser.add_argument(
-        '--seed',
-        type=int,
-        default=42,
-        help='Random seed for reproducibility (default: 42)'
-    )
-    
-    parser.add_argument(
-        '--exclude',
-        nargs='*',
-        help='Column names to exclude from analysis'
-    )
-    
-    parser.add_argument(
-        '--interpret',
-        action='store_true',
-        help='Run detailed interpretation of top results'
-    )
-    
-    parser.add_argument(
-        '--top-n',
-        type=int,
-        default=10,
-        help='Number of top combinations to interpret (default: 10, only with --interpret)'
-    )
-    
-    parser.add_argument(
-        '--simple',
-        action='store_true',
-        help='Use simple analysis function (faster, less detailed)'
-    )
-    
-    parser.add_argument(
-        '--silhouette-threshold',
-        type=float,
-        default=0.6,
-        help='Silhouette threshold for high-performance results (default: 0.6)'
-    )
-    
-    return parser.parse_args()
+#add to unsupervised.py
+# === unsupervised.py — add after you compute y for the best 2D plot ===========
+from sklearn.metrics import silhouette_samples
 
 
-def validate_input_file(file_path):
-    """Validate that input file exists and has correct extension."""
-    path = Path(file_path)
-    
-    if not path.exists():
-        print(f"ERROR: Input file does not exist: {file_path}")
-        sys.exit(1)
-    
-    valid_extensions = {'.csv', '.parquet'}
-    if path.suffix.lower() not in valid_extensions:
-        print(f"ERROR: Unsupported file type: {path.suffix}")
-        print(f"Supported types: {', '.join(valid_extensions)}")
-        sys.exit(1)
-    
-    return str(path.absolute())
+# --------------------------------------------------------------------------
+# --- Core Class
+# --------------------------------------------------------------------------
 
+from typing import Optional, Iterable, Dict, Any, Tuple, List
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-def main():
-    """Main runner function."""
-    args = parse_arguments()
-    
-    print("="*80)
-    print("UNSUPERVISED LEARNING ANALYSIS RUNNER")
-    print("="*80)
-    
-    # Validate inputs
-    data_path = validate_input_file(args.data)
-    output_dir = os.path.abspath(args.output)
-    exclude_columns = set(args.exclude) if args.exclude else None
-    
-    # Print configuration
-    print(f"Data file: {data_path}")
-    print(f"Output directory: {output_dir}")
-    print(f"Max samples: {args.max_samples or 'All'}")
-    print(f"Random seed: {args.seed}")
-    print(f"Exclude columns: {exclude_columns or 'None'}")
-    print(f"Interpretation: {'Yes' if args.interpret else 'No'}")
-    if args.interpret:
-        print(f"Top N to interpret: {args.top_n}")
-    print()
-    
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.decomposition import TruncatedSVD, PCA
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+
+# ---------- helpers ----------
+def _make_ohe():
+    """Create a OneHotEncoder that always returns dense output, compatible across sklearn versions."""
     try:
-        if args.simple:
-            # Simple analysis
-            print("Running simple analysis...")
-            results_path = run_simple_analysis(
-                data_path=data_path,
-                output_dir=output_dir,
-                max_samples=args.max_samples,
-                exclude_columns=exclude_columns
-            )
-            
-        else:
-            # Full analysis with custom analyzer
-            print("Running comprehensive analysis...")
-            
-            # Initialize analyzer
-            analyzer = UnsupervisedAnalyzer(
-                random_state=args.seed,
-                max_cat_cardinality=30,
-                svd_components=50
-            )
-            
-            # Run analysis
-            results_path = analyzer.run_full_analysis(
-                data_path=data_path,
-                output_dir=output_dir,
-                exclude_columns=exclude_columns,
-                max_samples=args.max_samples
-            )
-            
-            # Run interpretation if requested
-            if args.interpret:
-                print("\n" + "="*58)
-                print("RUNNING CLUSTER INTERPRETATION")
-                print("="*58)
-                
-                # Load original data for interpretation
-                df_original = analyzer.load_data(data_path)
-                if args.max_samples and len(df_original) > args.max_samples:
-                    df_original = df_original.sample(args.max_samples, random_state=args.seed)
-                
-                # Initialize interpreter
-                interpreter = ClusterInterpreter(random_state=args.seed)
-                
-                # Run interpretation
-                interpretation_results = interpreter.interpret_top_combinations(
-                    analyzer=analyzer,
-                    df=df_original,
-                    output_dir=output_dir,
-                    top_n=args.top_n
-                )
-                
-                print(f"\nInterpretation completed for {len(interpretation_results)} combinations")
-        
-        print("\n" + "="*80)
-        print("ANALYSIS COMPLETED SUCCESSFULLY!")
-        print("="*80)
-        print(f"Results saved to: {output_dir}")
-        print("\nKey output files:")
-        print(f"  - all_combinations_results.csv")
-        print(f"  - high_performance_combinations.csv (if any found)")
-        print(f"  - best_combination_visualization.png (if 2D embedding found)")
-        if args.interpret:
-            print(f"  - cluster_interpretations/ (detailed analysis)")
-        
-    except KeyboardInterrupt:
-        print("\nAnalysis interrupted by user")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\nERROR: Analysis failed with error: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        # sklearn >= 1.2
+        return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    except TypeError:
+        # sklearn < 1.2
+        return OneHotEncoder(handle_unknown="ignore", sparse=False)
+
+def _try_umap():
+    try:
+        import umap
+        return umap.UMAP
+    except Exception:
+        return None
+
+#!/usr/bin/env python3
+"""
+Unsupervised Analysis Runner (single-file)
+
+- NaN-safe preprocessing (imputers in the pipeline)
+- Clustering grid (KMeans 2..10 + small DBSCAN sweep)
+- Dimensionality reduction sweep: PCA/SVD with 2..4 components
+- Picks the best (space, algorithm, config) by silhouette
+"""
 
 
-def run_quick_demo():
-    """Run a quick demo with synthetic data."""
-    print("Running quick demo with synthetic data...")
-    
-    import numpy as np
-    import pandas as pd
-    from sklearn.datasets import make_blobs
-    
-    # Create synthetic data
-    X, y = make_blobs(n_samples=1000, centers=4, n_features=10, 
-                      random_state=42, cluster_std=2.0)
-    
-    # Add some categorical features
-    np.random.seed(42)
-    cat_features = pd.DataFrame({
-        'category_A': np.random.choice(['Type1', 'Type2', 'Type3'], 1000),
-        'category_B': np.random.choice(['Group1', 'Group2'], 1000),
-        'status': np.random.choice(['Active', 'Inactive', 'Pending'], 1000)
-    })
-    
-    # Combine numeric and categorical
-    num_df = pd.DataFrame(X, columns=[f'feature_{i}' for i in range(10)])
-    demo_df = pd.concat([num_df, cat_features], axis=1)
-    
-    # Run analysis
-    analyzer = UnsupervisedAnalyzer(random_state=42)
-    results_path = analyzer.run_full_analysis(
-        data_path=demo_df,
-        output_dir='./demo_results',
-        max_samples=1000
-    )
-    
-    print(f"\nDemo completed! Results saved to: ./demo_results")
 
+# ---------- helpers ----------
+def _make_ohe():
+    """OneHotEncoder that always returns dense, across sklearn versions."""
+    try:
+        return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    except TypeError:
+        return OneHotEncoder(handle_unknown="ignore", sparse=False)
+
+# --------------------------------------------------------------------------
+# --- Core Class
+# --------------------------------------------------------------------------
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+import warnings
+import re
+from typing import Optional, Dict, Any, Tuple, List, Iterable
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.decomposition import PCA, TruncatedSVD
+from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+
+warnings.filterwarnings("ignore")
 
 def _make_ohe():
-    try:
-        return OneHotEncoder(handle_unknown="ignore", sparse_output=True)
-    except TypeError:
-        return OneHotEncoder(handle_unknown="ignore", sparse=True)
-
-def _scores(X, y):
-    uniq = set(y)
-    if len(uniq) <= 1 or uniq == {-1}:
-        return dict(silhouette=np.nan, calinski_harabasz=np.nan, davies_bouldin=np.nan,
-                    n_clusters=1, n_noise=int(np.sum(y == -1)) if -1 in uniq else 0)
-    def safe(fn):
-        try: return fn(X, y)
-        except Exception: return np.nan
-    return dict(
-        silhouette=safe(silhouette_score),
-        calinski_harabasz=safe(calinski_harabasz_score),
-        davies_bouldin=safe(davies_bouldin_score),
-        n_clusters=len([u for u in uniq if u != -1]),
-        n_noise=int(np.sum(y == -1)) if -1 in uniq else 0,
-    )
+    """Helper to create OneHotEncoder safely."""
+    return OneHotEncoder(handle_unknown='ignore', sparse_output=False)
 
 class UnsupervisedAnalyzer:
-    def __init__(self, random_state: int = 42, max_cat_cardinality: int = 30, svd_components: int = 50):
-        self.rng = np.random.RandomState(random_state)
+    def __init__(self, random_state: int = 42):
         self.random_state = random_state
-        self.max_cat = max_cat_cardinality
-        self.svd_components = svd_components
+        self.df: Optional[pd.DataFrame] = None
+        self.df_processed: Optional[pd.DataFrame] = None
+        self.ct: Optional[ColumnTransformer] = None
+        self.preprocessed_path: Optional[str] = None
+        self.metrics_df: Optional[pd.DataFrame] = None
 
-    # Accept path or a DataFrame
-    def load_data(self, data_path_or_df):
-        if isinstance(data_path_or_df, pd.DataFrame):
-            return data_path_or_df.copy()
-        p = str(data_path_or_df)
-        if not os.path.exists(p):
-            raise FileNotFoundError(p)
-        if p.lower().endswith(".parquet"):
-            return pd.read_parquet(p)
-        if p.lower().endswith(".csv"):
-            return pd.read_csv(p, low_memory=False)
-        raise ValueError("Only CSV/Parquet or DataFrame supported")
+    # ---------------- Load + Preprocess ----------------
+    def load_data(self, data_path: str, max_samples: Optional[int] = None) -> pd.DataFrame:
+        print(f"📦 Loading data from: {data_path}...")
+        ext = str(data_path).lower()
+        if ext.endswith(".parquet"):
+            try:
+                df = pd.read_parquet(data_path, engine="pyarrow")
+            except Exception:
+                df = pd.read_parquet(data_path)
+        else:
+            df = pd.read_csv(
+                data_path, low_memory=False, compression="infer", encoding_errors="ignore"
+            )
+        if max_samples and len(df) > max_samples:
+            df = df.sample(n=max_samples, random_state=self.random_state).reset_index(drop=True)
+        self.df = df
+        print(f"[LOAD] Dataset shape: {df.shape}")
+        return df
 
-    def _build_matrix(self, df: pd.DataFrame, exclude_columns: Optional[Iterable[str]] = None):
-        # drop constants
-        const_cols = [c for c in df.columns if df[c].dropna().nunique() <= 1]
-        if const_cols:
-            df = df.drop(columns=const_cols)
+    def preprocess(self, df: pd.DataFrame, exclude_columns: Optional[Iterable[str]] = None) -> pd.DataFrame:
+        print("🔧 Preprocessing data...")
+        exclude_columns = list(exclude_columns) if exclude_columns else []
 
-        if exclude_columns:
-            drop_cols = [c for c in exclude_columns if c in df.columns]
-            if drop_cols:
-                df = df.drop(columns=drop_cols)
+        df = df.replace([np.inf, -np.inf], np.nan)
 
-        # select features
-        num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-        cat_all  = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
-        cat_cols = [c for c in cat_all if df[c].dropna().nunique() <= self.max_cat]
+        numeric_cols = [c for c in df.select_dtypes(include=np.number).columns if c not in exclude_columns]
+        categorical_cols = [c for c in df.select_dtypes(include=['object', 'category', 'bool']).columns if c not in exclude_columns]
 
-        Xdf = df[num_cols + cat_cols].copy()
-        for c in Xdf.select_dtypes(include=["bool"]).columns:
-            Xdf[c] = Xdf[c].astype(int)
+        num_pipe = Pipeline([('imputer', SimpleImputer(strategy='median')),
+                             ('scaler', StandardScaler())])
+        cat_pipe = Pipeline([('imputer', SimpleImputer(strategy='most_frequent')),
+                             ('ohe', _make_ohe())])
 
-        pre = ColumnTransformer(
+        self.ct = ColumnTransformer(
             transformers=[
-                ("num", StandardScaler(with_mean=False), [c for c in Xdf.columns if pd.api.types.is_numeric_dtype(Xdf[c])]),
-                ("cat", _make_ohe(), [c for c in Xdf.columns if not pd.api.types.is_numeric_dtype(Xdf[c])]),
+                ('num', num_pipe, numeric_cols),
+                ('cat', cat_pipe, categorical_cols),
             ],
-            remainder="drop",
+            remainder='drop'
         )
-        X = pre.fit_transform(Xdf)
-        return X, pre
 
+        X = self.ct.fit_transform(df)
+        if hasattr(X, "toarray"):
+            X = X.toarray()
+        X = np.asarray(X)
+
+        # Last-resort safety
+        if np.isnan(X).any():
+            X = np.nan_to_num(X, nan=0.0)
+        if np.isinf(X).any():
+            X[~np.isfinite(X)] = 0.0
+
+        # feature names
+        try:
+            feature_names = [n.split('__', 1)[-1] for n in self.ct.get_feature_names_out().tolist()]
+        except Exception:
+            feature_names = [f"f{i}" for i in range(X.shape[1])]
+
+        self.df_processed = pd.DataFrame(X, columns=feature_names, index=df.index)
+        print(f"✅ Preprocessing complete. Matrix shape: {self.df_processed.shape}")
+        return self.df_processed
+
+    # ---------------- Clustering on a given space ----------------
+    def _cluster_space(self, space_df: pd.DataFrame, space_tag: str) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """Run clustering grid on a provided feature space and return (metrics, results)."""
+        metrics: List[Dict[str, Any]] = []
+        results: Dict[str, Any] = {}
+
+        # KMeans sweep
+        for k in range(2, 11):
+            try:
+                km = KMeans(n_clusters=k, random_state=self.random_state, n_init=10)
+                labels = km.fit_predict(space_df)
+                if len(np.unique(labels)) > 1:
+                    sil = silhouette_score(space_df, labels)
+                    db = davies_bouldin_score(space_df, labels)
+                    ch = calinski_harabasz_score(space_df, labels)
+                    metrics.append({
+                        'space': space_tag, 'model': 'KMeans', 'config': f'k={k}',
+                        'n_clusters': k, 'silhouette': sil, 'davies_bouldin': db, 'calinski_harabasz': ch
+                    })
+                    results[f'{space_tag}__kmeans_{k}'] = {'clusters': labels, 'model': km, 'space': space_tag}
+            except Exception as e:
+                print(f"[WARN] KMeans(k={k}) failed in {space_tag}: {e}")
+
+        # DBSCAN tiny sweep
+        for eps in (0.3, 0.5, 0.7, 1.0):
+            for ms in (5, 10):
+                try:
+                    dbs = DBSCAN(eps=eps, min_samples=ms)
+                    labels = dbs.fit_predict(space_df)
+                    n_eff = len(np.unique(labels)) - (1 if -1 in labels else 0)
+                    if n_eff > 1:
+                        mask = labels != -1
+                        if mask.sum() > 1 and len(np.unique(labels[mask])) > 1:
+                            sil = silhouette_score(space_df.iloc[mask], labels[mask])
+                            db = davies_bouldin_score(space_df.iloc[mask], labels[mask])
+                            ch = calinski_harabasz_score(space_df.iloc[mask], labels[mask])
+                            metrics.append({
+                                'space': space_tag, 'model': 'DBSCAN', 'config': f'eps={eps},min={ms}',
+                                'n_clusters': n_eff, 'silhouette': sil, 'davies_bouldin': db, 'calinski_harabasz': ch
+                            })
+                            results[f'{space_tag}__dbscan_eps{eps}_min{ms}'] = {'clusters': labels, 'model': dbs, 'space': space_tag}
+                except Exception as e:
+                    print(f"[WARN] DBSCAN(eps={eps},min={ms}) failed in {space_tag}: {e}")
+
+        return pd.DataFrame(metrics), results
+
+    # ---------------- DR helpers ----------------
+    def _try_pca(self, X: pd.DataFrame, n: int) -> Optional[pd.DataFrame]:
+        try:
+            p = PCA(n_components=n, random_state=self.random_state).fit_transform(X)
+            return pd.DataFrame(p, index=X.index, columns=[f"pca_{i+1}" for i in range(n)])
+        except Exception as e:
+            print(f"[WARN] PCA(n={n}) failed: {e}")
+            return None
+
+    def _try_svd(self, X: pd.DataFrame, n: int) -> Optional[pd.DataFrame]:
+        try:
+            s = TruncatedSVD(n_components=n, random_state=self.random_state).fit_transform(X)
+            return pd.DataFrame(s, index=X.index, columns=[f"svd_{i+1}" for i in range(n)])
+        except Exception as e:
+            print(f"[WARN] SVD(n={n}) failed: {e}")
+            return None
+
+    # ---------------- Viz ----------------
+    def visualize(self, df: pd.DataFrame, embedding2d: np.ndarray, clusters: np.ndarray, title: str, out_dir: str, fname: str):
+        os.makedirs(out_dir, exist_ok=True)
+        plt.figure(figsize=(10, 8))
+        sns.scatterplot(x=embedding2d[:, 0], y=embedding2d[:, 1], hue=clusters, palette='viridis', legend='full')
+        plt.title(title)
+        plt.xlabel("Component 1"); plt.ylabel("Component 2")
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, fname))
+        plt.close()
+
+    # ---------------- Anomaly ----------------
+    def run_anomaly_detection(self, df_processed: pd.DataFrame, output_dir: str):
+        print("🕵️‍♂️ Running anomaly detection...")
+        os.makedirs(output_dir, exist_ok=True)
+
+        num = df_processed.select_dtypes(include=[np.number]).copy()
+        num = num.replace([np.inf, -np.inf], np.nan)
+        if num.isna().any().any():
+            imputer = SimpleImputer(strategy='median')
+            num[:] = imputer.fit_transform(num)
+
+        from sklearn.ensemble import IsolationForest
+        from sklearn.neighbors import LocalOutlierFactor
+
+        lof = LocalOutlierFactor(n_neighbors=20, contamination='auto')
+        lof_score = lof.fit_predict(num.values)
+
+        iso_forest = IsolationForest(contamination='auto', random_state=self.random_state)
+        iso_score = iso_forest.fit_predict(num.values)
+
+        df_out = num.copy()
+        df_out['lof_score'] = lof_score
+        df_out['iso_score'] = iso_score
+
+        try:
+            p2 = PCA(n_components=2, random_state=self.random_state).fit_transform(num.values)
+            plt.figure(figsize=(12, 6))
+            plt.subplot(1, 2, 1)
+            sns.scatterplot(x=p2[:, 0], y=p2[:, 1], hue=df_out['lof_score'], palette='coolwarm')
+            plt.title("LOF Anomaly Detection")
+            plt.subplot(1, 2, 2)
+            sns.scatterplot(x=p2[:, 0], y=p2[:, 1], hue=df_out['iso_score'], palette='coolwarm')
+            plt.title("Isolation Forest Anomaly Detection")
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_dir, "anomaly_detection_2d.png"))
+            plt.close()
+            print("✅ Anomaly detection visualizations saved.")
+        except Exception as e:
+            print(f"[WARN] Anomaly visualization failed: {e}")
+
+        n = len(df_out)
+        rank = pd.Series(np.arange(1, n + 1) if n > 0 else np.full(n, np.nan))
+        df_out.assign(mean_rank=rank).sort_values("mean_rank")\
+              .to_csv(os.path.join(output_dir, "anomaly_rank.csv"), index=False)
+        print(f"🧭 Unsupervised outlier visuals saved → {output_dir}")
+
+    # ---------------- Orchestrator ----------------
     def run_full_analysis(
         self,
-        data_path,
+        data_path: str,
         output_dir: str,
         exclude_columns: Optional[Iterable[str]] = None,
         max_samples: Optional[int] = None,
-        silhouette_threshold: float = 0.6,
+        silhouette_threshold: float = 0.5
     ) -> str:
+        df = self.load_data(data_path, max_samples=max_samples)
+        self.preprocess(df, exclude_columns)
+
+        # NaN-free now
+        self.run_anomaly_detection(self.df_processed.copy(), os.path.join(output_dir, 'anomalies'))
+
+        all_metrics_frames: List[pd.DataFrame] = []
+        all_results: Dict[str, Any] = {}
+
+        # 0) RAW processed space
+        raw_metrics, raw_results = self._cluster_space(self.df_processed, "raw")
+        all_metrics_frames.append(raw_metrics); all_results.update(raw_results)
+
+        # 1) PCA/SVD spaces with n=2..4
+        spaces: List[Tuple[str, Optional[pd.DataFrame], int]] = []
+        for n in (2, 3, 4):
+            p = self._try_pca(self.df_processed, n)
+            if p is not None:
+                spaces.append((f"pca{n}", p, n))
+            s = self._try_svd(self.df_processed, n)
+            if s is not None:
+                spaces.append((f"svd{n}", s, n))
+
+        for tag, Xspace, _n in spaces:
+            m, r = self._cluster_space(Xspace, tag)
+            all_metrics_frames.append(m); all_results.update(r)
+
+        # Combine metrics across all spaces
+        self.metrics_df = pd.concat(all_metrics_frames, ignore_index=True) if all_metrics_frames else pd.DataFrame()
+
+        if not len(self.metrics_df):
+            print("🤷 No valid clustering results found.")
+            self.preprocessed_path = None
+            return "No good clusters found."
+
+        # Pick best by silhouette
+        best = self.metrics_df.sort_values("silhouette", ascending=False).iloc[0]
+        print(f"\n🏆 Best combo: [{best['space']}] {best['model']} ({best['config']}) "
+              f"→ silhouette={best['silhouette']:.3f}")
+
+        # Retrieve labels
+        key_prefix = f"{best['space']}__"
+        # find the matching result key
+        chosen_key = None
+        for k in all_results.keys():
+            if k.startswith(key_prefix) and best['model'].lower() in k.lower() and best['config'].split('=')[0] in k:
+                chosen_key = k; break
+        if chosen_key is None:
+            # fallback: first space-matching key
+            chosen_key = next(k for k in all_results if k.startswith(key_prefix))
+        best_res = all_results[chosen_key]
+        labels = best_res['clusters']
+
+        # 2D embedding for viz
+        if best['space'] == "raw":
+            emb2 = self._try_pca(self.df_processed, 2)
+            if emb2 is None:
+                emb2 = self._try_svd(self.df_processed, 2)
+            emb2_arr = emb2.values if emb2 is not None else self.df_processed.iloc[:, :2].values
+            emb_tag = "raw2d"
+        else:
+            Xspace = next(sp for (t, sp, _n) in spaces if t == best['space'])
+            # if that space has >2 dims, take first 2
+            emb2_arr = Xspace.iloc[:, :2].values
+            emb_tag = f"{best['space']}_2d"
+
+        viz_dir = os.path.join(output_dir, "visualizations")
+        title = f"{best['space'].upper()} • {best['model']} ({best['config']})"
+        self.visualize(df, emb2_arr, labels, title, viz_dir, f"{best['space']}_{best['model']}.png")
+
+        # Save augmented original df with clusters and 2D coords
+        out_df = df.copy()
+        out_df['cluster_label'] = labels
+        out_df['x_2d_plot'] = emb2_arr[:, 0]
+        out_df['y_2d_plot'] = emb2_arr[:, 1]
+        self.preprocessed_path = os.path.join(output_dir, 'preprocessed_with_clusters.csv')
         os.makedirs(output_dir, exist_ok=True)
-        df = self.load_data(data_path)
-        if max_samples and len(df) > max_samples:
-            df = df.sample(max_samples, random_state=self.random_state)
+        out_df.to_csv(self.preprocessed_path, index=False)
+        print(f"💾 Data with cluster labels saved to: {self.preprocessed_path}")
 
-        X, _ = self._build_matrix(df, exclude_columns=exclude_columns)
-
-        # Embeddings (compact but useful)
-        embeddings: Dict[str, np.ndarray] = {}
-
-        # SVD50 (fast + good for UMAP input)
-        comp = max(2, min(self.svd_components, X.shape[1] - 1 if X.shape[1] > 1 else 2))
-        svd50 = TruncatedSVD(n_components=comp, random_state=self.random_state)
-        X50 = svd50.fit_transform(X)
-        embeddings["SVD50"] = X50
-
-        # SVD2 (for plotting)
-        svd2 = TruncatedSVD(n_components=2, random_state=self.random_state)
-        embeddings["SVD2"] = svd2.fit_transform(X)
-
-        # PCA2 (dense fallback if safe)
+        # Optional simple cluster stats
         try:
-            X_dense = X if hasattr(X, "toarray") and X.shape[1] < 2000 else (X.toarray() if hasattr(X, "toarray") and (X.shape[0]*X.shape[1] < 3e7) else None)
-            if X_dense is not None:
-                pca2 = PCA(n_components=2, random_state=self.random_state)
-                embeddings["PCA2"] = pca2.fit_transform(X_dense)
-        except Exception:
-            pass
+            self.analyze_clusters(df, labels, output_dir, f"{best['space']}_{best['model']}")
+        except Exception as e:
+            print(f"[WARN] analyze_clusters failed: {e}")
 
-        # UMAP2 on SVD50
+        # Optionally filter on threshold
+        if float(best['silhouette']) < silhouette_threshold:
+            print(f"ℹ️ Best silhouette {best['silhouette']:.3f} < threshold {silhouette_threshold:.3f}")
+        return self.preprocessed_path
+    
+    def analyze_clusters(self, df_original: pd.DataFrame, clusters: np.ndarray, output_dir: str, prefix: str):
+        """
+        Summarize clusters using only numeric columns for stats, and
+        save per-feature boxplots safely.
+        """
+        print("🔎 Analyzing cluster characteristics...")
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Attach labels
+        df_clustered = df_original.copy()
+        df_clustered["cluster"] = clusters
+
+        # Use numeric columns only for aggregation/plots
+        num_cols = [c for c in df_clustered.select_dtypes(include=[np.number]).columns if c != "cluster"]
+        if not num_cols:
+            print("[WARN] No numeric columns to analyze; skipping stats/plots.")
+            return
+
+        # Robust aggregation (numeric only)
         try:
+            stats = (
+                df_clustered.groupby("cluster")[num_cols]
+                .agg(["count", "mean", "median", "std"])
+            )
+            stats.to_csv(os.path.join(output_dir, f"{prefix}_cluster_stats.csv"))
+        except Exception as e:
+            print(f"[WARN] Failed to compute cluster stats: {e}")
+
+        # Boxplots per numeric column (guarded)
+        for col in num_cols:
             try:
-                import umap
-            except Exception:
-                import subprocess
-                subprocess.run([sys.executable, "-m", "pip", "install", "-q", "umap-learn"], check=True)
-                import umap
-            um = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1,
-                           random_state=self.random_state, metric="euclidean", verbose=False)
-            embeddings["UMAP2"] = um.fit_transform(X50)
-        except Exception:
-            pass
+                plt.figure(figsize=(10, 6))
+                sns.boxplot(x="cluster", y=col, data=df_clustered, showfliers=False)
+                plt.title(f"Distribution of {col} by Cluster")
+                plt.tight_layout()
+                plt.savefig(os.path.join(output_dir, f"{prefix}_{col}_boxplot.png"))
+                plt.close()
+            except Exception as e:
+                print(f"[WARN] Boxplot failed for {col}: {e}")
 
-        # Clustering for each 2D embedding
-        results: List[Dict[str, Any]] = []
-        for name, E in embeddings.items():
-            # KMeans k=2..8
-            for k in range(2, 9):
-                try:
-                    km = KMeans(n_clusters=k, n_init=10, random_state=self.random_state)
-                    y = km.fit_predict(E)
-                    sc = _scores(E, y)
-                    results.append(dict(embedding=name, algorithm="KMeans", config=f"k={k}", embedding_dim=E.shape[1], **sc))
-                except Exception:
-                    continue
-            # DBSCAN a couple of eps
-            for eps in (0.3, 0.5, 0.7):
-                try:
-                    db = DBSCAN(eps=eps, min_samples=10, n_jobs=-1)
-                    y = db.fit_predict(E)
-                    sc = _scores(E, y)
-                    results.append(dict(embedding=name, algorithm="DBSCAN", config=f"eps={eps}_min=10", embedding_dim=E.shape[1], **sc))
-                except Exception:
-                    continue
+        # (Optional) quick categorical peek: top levels per cluster
+        cat_cols = [c for c in df_clustered.select_dtypes(include=["object", "category", "bool"]).columns if c != "cluster"]
+        if cat_cols:
+            try:
+                topk = {}
+                for c in cat_cols[:20]: # cap to keep files small
+                    vc = (
+                        df_clustered.groupby("cluster")[c]
+                        .apply(lambda s: s.astype(str).value_counts(normalize=True).head(3))
+                        .unstack(fill_value=0)
+                    )
+                    topk[c] = vc
+                # Save one wide CSV per categorical feature
+                for c, table in topk.items():
+                    table.to_csv(os.path.join(output_dir, f"{prefix}_topcats_{re.sub('[^A-Za-z0-9_]+','_', c)}.csv"))
+            except Exception as e:
+                print(f"[WARN] Categorical summary failed: {e}")
 
-        results_df = pd.DataFrame(results)
-        results_df["combination"] = results_df["embedding"] + " + " + results_df["algorithm"] + " (" + results_df["config"] + ")"
-        results_df.to_csv(os.path.join(output_dir, "all_combinations_results.csv"), index=False)
+# --------------------------------------------------------------------------
+# Convenience wrappers
+# --------------------------------------------------------------------------
+def run_simple_analysis(
+    data_path: str,
+    output_dir: str,
+    max_samples: Optional[int] = None,
+    exclude_columns: Optional[Iterable[str]] = None,
+    seed: int = 42
+) -> str:
+    return UnsupervisedAnalyzer(random_state=seed).run_full_analysis(
+        data_path=data_path,
+        output_dir=output_dir,
+        exclude_columns=exclude_columns,
+        max_samples=max_samples,
+        silhouette_threshold=0.6,
+    )
 
-        hi = results_df.dropna(subset=["silhouette"]).query("silhouette >= @silhouette_threshold").copy()
-        hi.to_csv(os.path.join(output_dir, "high_performance_combinations.csv"), index=False)
-
-        # Plot best 2D
+def run_unsupervised(data, output, max_samples=None, seed=42, interpret=False, top_n=10):
+    analyzer = UnsupervisedAnalyzer(random_state=seed)
+    out = analyzer.run_full_analysis(
+        data_path=data,
+        output_dir=output,
+        max_samples=max_samples
+    )
+    # Only attempt interpretation if a ClusterInterpreter is actually available
+    if interpret:
         try:
-            best = (results_df
-                    .query("embedding_dim == 2")
-                    .dropna(subset=["silhouette"])
-                    .sort_values("silhouette", ascending=False)
-                    .iloc[0])
-            emb = best["embedding"]; algo = best["algorithm"]; cfg = best["config"]; E = embeddings[emb]
-            # refit for labels
-            if algo == "KMeans":
-                k = int(cfg.split("=")[1]); y = KMeans(n_clusters=k, n_init=10, random_state=self.random_state).fit_predict(E)
-            else:
-                parts = cfg.split("_"); eps = float(parts[0].split("=")[1]); m = int(parts[1].split("=")[1])
-                y = DBSCAN(eps=eps, min_samples=m, n_jobs=-1).fit_predict(E)
+            from unsupervised import ClusterInterpreter  # or your real path
+            ClusterInterpreter(random_state=seed).interpret_top_combinations(
+                analyzer=analyzer,
+                df=analyzer.load_data(data)
+            )
+        except Exception as e:
+            print(f"[WARN] Interpretation skipped: {e}")
+    return out
 
-            plt.figure(figsize=(8,6))
-            for u in sorted(set(y)):
-                M = (y == u)
-                plt.scatter(E[M,0], E[M,1], s=12, alpha=0.8, label=("Noise" if u==-1 else f"C{u}"))
-            plt.legend(title="Clusters", bbox_to_anchor=(1.02,1), loc="upper left", fontsize=8)
-            plt.title(f"Best: {best['combination']}  Sil={best['silhouette']:.3f}")
-            plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, "best_combination_visualization.png"), dpi=180, bbox_inches="tight")
-            plt.close()
-        except Exception:
-            pass
-
-        return os.path.abspath(output_dir)
-
-class ClusterInterpreter:
-    def __init__(self, random_state: int = 42):
-        self.random_state = random_state
-
-    # Minimal placeholder that won’t crash the runner; extend as needed
-    def interpret_top_combinations(
-        self,
-        analyzer: UnsupervisedAnalyzer,
-        df: pd.DataFrame,
-        output_dir: str,
-        top_n: int = 10
-    ) -> List[Dict[str, Any]]:
-        path = os.path.join(output_dir, "all_combinations_results.csv")
-        if not os.path.exists(path):
-            return []
-        results = pd.read_csv(path)
-        top = (results.dropna(subset=["silhouette"])
-                      .sort_values("silhouette", ascending=False)
-                      .head(top_n)
-                      .copy())
-        # Write a tiny index so the runner has something to point to
-        idx = []
-        for _, r in top.iterrows():
-            idx.append(dict(combo=r["combination"], silhouette=float(r["silhouette"])))
-        pd.DataFrame(idx).to_json(os.path.join(output_dir, "cluster_interpretations_index.json"), orient="records", indent=2)
-        return idx
 
 def run_simple_analysis(
     data_path,
@@ -511,16 +572,5 @@ def run_unsupervised(data, output, max_samples=None, seed=42, interpret=False, t
     if interpret:
         ClusterInterpreter(random_state=seed).interpret_top_combinations(
             analyzer=analyzer,
-            df=analyzer.load_data(data),
-            output_dir=output,
-            top_n=top_n
+            df=analyzer.load_data(data)
         )
-    return out
-
-
-if __name__ == "__main__":
-    # Check if running demo
-    if len(sys.argv) == 2 and sys.argv[1] == '--demo':
-        run_quick_demo()
-    else:
-        main()
