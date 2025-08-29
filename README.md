@@ -166,7 +166,7 @@ Through this project, we demonstrated:
 - **Time series models** highlight temporal dynamics and enable forecasting.  
 
 ## Related links
-[Git](https://github.com/yaeliavni/AI)
-r\AI community about ai 
+- [Git](https://github.com/yaeliavni/AI) - Full code pipeline
+- [r/ai](https://www.reddit.com/r/ai/) — Community about unsupervised learning discussions and projects.
 
 ---
