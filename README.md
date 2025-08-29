@@ -167,6 +167,8 @@ Through this project, we demonstrated:
 
 ## Related links
 - [Git](https://github.com/yaeliavni/AI) - Full code pipeline
-- [r/ai](https://www.reddit.com/r/ai/) — Community about unsupervised learning discussions and projects.
-
+- [r/MachineLearning](https://www.reddit.com/r/MachineLearning/) — Community for research papers, tutorials, and discussions on all areas of machine learning.  
+- [r/Unsupervised](https://www.reddit.com/r/unsupervised/) — Focused community around clustering, embeddings, and unsupervised learning methods.  
+- [r/datascience](https://www.reddit.com/r/datascience/) — Broad data science community sharing workflows, projects, and resources.  
+- [r/statistics](https://www.reddit.com/r/statistics/) — Forum for statistical questions, testing, and theoretical discussions.  
 ---
