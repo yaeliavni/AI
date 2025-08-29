@@ -165,4 +165,8 @@ Through this project, we demonstrated:
 - **Unsupervised learning** reveals latent structure and outliers.  
 - **Time series models** highlight temporal dynamics and enable forecasting.  
 
+## Related links
+[Git](https://github.com/yaeliavni/AI)
+r\AI community about ai 
+
 ---
